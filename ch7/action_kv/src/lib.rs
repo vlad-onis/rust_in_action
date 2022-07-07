@@ -22,7 +22,7 @@ pub struct KeyValuePair {
 #[derive(Debug)]
 pub struct ActionKV {
     f: File,
-    index: HashMap<ByteString, ByteString>,
+    index: HashMap<ByteString, u64>,
 }
 
 impl ActionKV {
@@ -42,7 +42,7 @@ impl ActionKV {
         let mut f = io::BufReader::new(&mut self.f);
 
         loop {
-            let _position = f.seek(SeekFrom::Current(0))?;
+            let position = f.seek(SeekFrom::Current(0))?;
             let maybe_kv = ActionKV::process_record(&mut f);
             let kv = match maybe_kv {
                 Ok(kv) => kv,
@@ -54,7 +54,7 @@ impl ActionKV {
                 },
             };
 
-            self.index.insert(kv.key, kv.value);
+            self.index.insert(kv.key, position);
         }
 
         Ok(())
@@ -88,6 +88,13 @@ impl ActionKV {
         Ok(KeyValuePair { key, value })
     }
 
+    pub fn insert(&mut self, key: &ByteStr, val: &ByteStr) -> io::Result<()> {
+        let position = self.insert_ignore_index(key, val)?;
+        self.index.insert(key.to_vec(), position);
+
+        Ok(())
+    }
+
     pub fn insert_ignore_index(&mut self, key: &ByteStr, val: &ByteStr) -> io::Result<u64> {
         let mut f = BufWriter::new(&mut self.f);
         let key_len = key.len();
@@ -118,11 +125,12 @@ impl ActionKV {
 #[cfg(test)]
 pub mod tests {
     use super::ActionKV;
+    use crate::ByteStr;
     use byteorder::{LittleEndian, WriteBytesExt};
     use std::fs::{File, OpenOptions};
-    use std::io;
     use std::io::{Seek, SeekFrom, Write};
     use std::path::Path;
+    use std::{fs, io};
 
     #[test]
     pub fn open_file() {
@@ -133,7 +141,10 @@ pub mod tests {
     #[test]
     pub fn test_process_record() {
         let path = Path::new("test_data/test_file");
-        let written = write_hardcoded_bitcask(path);
+        if path.exists() {
+            fs::remove_file(path).expect("Failed to delete file");
+        }
+        let written = write_hardcoded_bitcask(path, b"vlad", b"onis");
         assert!(written.is_ok());
 
         let mut f = File::open(path).unwrap();
@@ -146,28 +157,43 @@ pub mod tests {
     #[test]
     pub fn test_load() {
         let path = Path::new("test_data/test_file");
-        let written = write_hardcoded_bitcask(path);
+        if path.exists() {
+            fs::remove_file(path).expect("Failed to delete file");
+        }
+        let written = write_hardcoded_bitcask(path, b"vlad", b"onis");
+        assert!(written.is_ok());
+        let written = write_hardcoded_bitcask(path, b"test", b"data");
         assert!(written.is_ok());
 
         let mut akv = ActionKV::open(path).unwrap();
+        akv.f
+            .seek(SeekFrom::Start(0))
+            .expect("Could not move cursor");
         assert!(akv.load().is_ok());
-        let value = String::from_utf8_lossy(akv.index.get("vlad".as_bytes()).unwrap());
-        assert_eq!(String::from("onis"), value);
+        let value = akv.index.get("vlad".as_bytes()).unwrap();
+        assert_eq!(&0, value);
     }
 
     #[test]
     pub fn test_insert() {
+        let path = Path::new("test_data/test_file");
+        if path.exists() {
+            fs::remove_file(path).expect("Failed to delete file");
+        }
+
         let key1 = b"vlad";
         let val1 = b"onis";
 
-        let akv = ActionKV::open(Path::new("test_data/test_write_file"));
+        let akv = ActionKV::open(Path::new("test_data/test_file"));
         assert!(akv.is_ok());
         let mut akv = akv.unwrap();
 
         let res = akv.insert_ignore_index(key1, val1);
         assert!(res.is_ok());
 
-        akv.f.seek(SeekFrom::Start(0)).expect("Could not move cursor");
+        akv.f
+            .seek(SeekFrom::Start(0))
+            .expect("Could not move cursor");
 
         let record = ActionKV::process_record(&mut akv.f);
         assert!(record.is_ok());
@@ -176,29 +202,31 @@ pub mod tests {
         assert_eq!(record.value, b"onis");
     }
 
-    pub fn write_hardcoded_bitcask(path: &Path) -> io::Result<u8> {
+    pub fn write_hardcoded_bitcask(path: &Path, key: &ByteStr, val: &ByteStr) -> io::Result<u8> {
         let mut to_write = vec![];
 
         let mut f = open(path)?;
 
-        let key_len: u32 = 4;
-        let val_len: u32 = 4;
-        let key: [u8; 4] = b"vlad".to_owned();
-        let val: [u8; 4] = b"onis".to_owned();
+        let key_len: u32 = key.len() as u32;
+        let val_len: u32 = val.len() as u32;
 
-        let data = b"vladonis";
-        let check_sum = crc::crc32::checksum_ieee(data);
+        let data = format!(
+            "{}{}",
+            String::from_utf8_lossy(key),
+            String::from_utf8_lossy(val)
+        );
+        let check_sum = crc::crc32::checksum_ieee(data.as_bytes());
 
         to_write.write_u32::<LittleEndian>(check_sum)?;
         to_write.write_u32::<LittleEndian>(key_len)?;
         to_write.write_u32::<LittleEndian>(val_len)?;
 
         for byte in key {
-            to_write.write_u8(byte)?;
+            to_write.write_u8(*byte)?;
         }
 
         for byte in val {
-            to_write.write_u8(byte)?;
+            to_write.write_u8(*byte)?;
         }
 
         f.write(to_write.as_ref())?;

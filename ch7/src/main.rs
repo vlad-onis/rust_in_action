@@ -1,4 +1,3 @@
 mod utils;
 
-fn main() {
-}
+fn main() {}
