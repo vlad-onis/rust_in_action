@@ -1,4 +1,3 @@
-
 #[allow(dead_code)]
 pub fn parity_check(bytes: &[u8]) -> u8 {
     let mut n_ones: u32 = 0;
