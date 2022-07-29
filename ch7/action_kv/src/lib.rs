@@ -188,7 +188,7 @@ pub mod tests {
         assert!(akv.is_ok());
         let mut akv = akv.unwrap();
 
-        let res = akv.insert_ignore_index(key1, val1);
+        let res = akv.insert(key1, val1);
         assert!(res.is_ok());
 
         akv.f
